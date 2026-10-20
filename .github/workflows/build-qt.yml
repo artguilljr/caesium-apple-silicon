@@ -30,7 +30,7 @@ jobs:
           mkdir -p dependencies
           curl -fL --retry 3 https://github.com/sparkle-project/Sparkle/releases/download/1.27.1/Sparkle-1.27.1.tar.xz -o dependencies/sparkle.tar.xz
           tar -xf dependencies/sparkle.tar.xz -C dependencies
-          lipo -verify_arch arm64 dependencies/Sparkle.framework/Sparkle
+          lipo dependencies/Sparkle.framework/Sparkle -verify_arch arm64
           sudo mkdir -p /Library/Frameworks
           sudo cp -R dependencies/Sparkle.framework /Library/Frameworks/
           python3 - <<'PY'
@@ -52,7 +52,7 @@ jobs:
           set -euo pipefail
           # Rust host is ARM64; keep Cargo output at the path expected by upstream CMake.
           unset CARGO_BUILD_TARGET
-          cmake -S . -B build-arm64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_PREFIX_PATH="$Qt6_Dir" -DSPARKLE_INCLUDE_DIR=/Library/Frameworks/Sparkle.framework/Headers -DLIBSSH_INCLUDE_DIR="$(xcrun --show-sdk-path)/usr/include"
+          cmake -S . -B build-arm64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DSPARKLE_INCLUDE_DIR=/Library/Frameworks/Sparkle.framework/Headers -DLIBSSH_INCLUDE_DIR="$(xcrun --show-sdk-path)/usr/include"
           cmake --build build-arm64 --config Release --parallel 3
           QT_QPA_PLATFORM=offscreen ./build-arm64/tests/CsTests
       - name: Bundle standalone application
@@ -67,11 +67,11 @@ jobs:
           old=$(otool -L "$exe" | awk '/libcaesium/ {print $1}')
           install_name_tool -change "$old" '@rpath/libcaesium.dylib' "$exe"
           install_name_tool -id '@rpath/libcaesium.dylib' "$app/Contents/Frameworks/libcaesium.dylib"
-          "$Qt6_Dir/bin/macdeployqt" "$app" -always-overwrite
+          "$QT_ROOT_DIR/bin/macdeployqt" "$app" -always-overwrite
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
-          lipo -verify_arch arm64 "$exe"
-          lipo -verify_arch arm64 "$app/Contents/Frameworks/libcaesium.dylib"
+          lipo "$exe" -verify_arch arm64
+          lipo "$app/Contents/Frameworks/libcaesium.dylib" -verify_arch arm64
           otool -L "$exe"
           # Remove original build libraries so launch proves bundled library resolution.
           mv build-arm64/libcaesium-prefix/src/libcaesium/target/release build-arm64/rust-build-hidden
