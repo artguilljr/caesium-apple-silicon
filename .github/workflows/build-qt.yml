@@ -1,121 +1,105 @@
-name: Build
+name: Apple Silicon Mac App
 on:
   push:
-    branches: [ main ]
-    paths-ignore:
-      - 'README.md'
-      - 'LICENSE'
-      - '.clang-format'
-      - 'setup.iss'
-      - '.github/ISSUE_TEMPLATE/**'
-  pull_request:
-    branches: [ main ]
-    paths-ignore:
-      - 'README.md'
-      - 'LICENSE'
-      - '.clang-format'
-      - 'setup.iss'
-      - '.github/ISSUE_TEMPLATE/**'
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  mac-app:
+    runs-on: macos-15
+    timeout-minutes: 45
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Cache libcaesium
-        id: cache-libcaesium
-        uses: actions/cache@v4
-        env:
-          cache-name: cache-libcaesium
-        with:
-          path: ${{github.workspace}}/build-${{ runner.os }}/libcaesium-prefix
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/libcaesium.conf') }}
-
+      - uses: actions/checkout@v4
+      - name: Verify Apple Silicon host
+        run: test "$(uname -m)" = arm64
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          aqtversion: '==3.1.*'
           version: '6.8.2'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_mingw'
-          modules: 'qtimageformats'
-          tools: 'tools_mingw1310'
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtimageformats
           cache: true
-
-      - name: Install Rust target
-        run: rustup target add x86_64-pc-windows-gnu
-
-      - name: Configure CMake
-        run: cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{env.Qt6_Dir}}" -G "CodeBlocks - MinGW Makefiles" -B ${{github.workspace}}/build-${{ runner.os }}
-
-      - name: Build
-        run: cmake --build ${{github.workspace}}/build-${{ runner.os }} --config Release --target caesium_image_compressor
-
-  #  build-macos:
-  #    runs-on: macos-latest
-  #    steps:
-  #      - name: Checkout code
-  #        uses: actions/checkout@v4
-  #
-  #      - name: Cache libcaesium
-  #        id: cache-libcaesium
-  #        uses: actions/cache@v4
-  #        env:
-  #          cache-name: cache-libcaesium
-  #        with:
-  #          path: ${{github.workspace}}/build-${{ runner.os }}/libcaesium-prefix
-  #          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/libcaesium.conf') }}
-  #
-  #      - name: Install Qt
-  #        uses: jurplel/install-qt-action@v4
-  #        with:
-  #          aqtversion: '==3.1.*'
-  #          version: '6.7.3'
-  #          host: 'mac'
-  #          target: 'desktop'
-  #          arch: 'clang_64'
-  #          modules: 'qtimageformats'
-  #          cache: true
-  #
-  #      - name: Setup Sparkle
-  #        run: brew install --cask https://raw.githubusercontent.com/Homebrew/homebrew-cask/c6dfe6baf1639998ba1707f68668cf8fa97bac9d/Casks/sparkle.rb && sudo cp -R /usr/local/Caskroom/sparkle/1.27.1/Sparkle.framework /Library/Frameworks/Sparkle.framework
-  #
-  #      - name: Configure CMake
-  #        run: cmake -B build_dir -DCMAKE_PREFIX_PATH="${{env.Qt6_Dir}}" -DSPARKLE_INCLUDE_DIR=/usr/local/Caskroom/sparkle/1.27.1/Sparkle.framework/Versions/Current/Headers -DLIBSSH_INCLUDE_DIR=/usr/local/opt/openssl/ -DCMAKE_BUILD_TYPE=Release -B ${{github.workspace}}/build-${{ runner.os }}
-  #
-  #      - name: Build
-  #        run: cmake --build ${{github.workspace}}/build-${{ runner.os }} --config Release --target caesium_image_compressor
-
-  build-ubuntu:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Cache libcaesium
-        id: cache-libcaesium
-        uses: actions/cache@v4
+      - name: Prepare native dependencies and build fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-darwin
+          mkdir -p dependencies
+          curl -fL --retry 3 https://github.com/sparkle-project/Sparkle/releases/download/1.27.1/Sparkle-1.27.1.tar.xz -o dependencies/sparkle.tar.xz
+          tar -xf dependencies/sparkle.tar.xz -C dependencies
+          lipo -verify_arch arm64 dependencies/Sparkle.framework/Sparkle
+          sudo mkdir -p /Library/Frameworks
+          sudo cp -R dependencies/Sparkle.framework /Library/Frameworks/
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('CMakeLists.txt')
+          s = p.read_text().replace('set(CMAKE_OSX_DEPLOYMENT_TARGET "11")', 'set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0")')
+          s = s.replace('libcaesium.so', 'libcaesium.dylib')
+          s = s.replace('-F/Library/Frameworks -Wl -rpath @loader_path/../Frameworks', '-F/Library/Frameworks -Wl,-rpath,@loader_path/../Frameworks')
+          p.write_text(s)
+          p = Path('Info.plist')
+          p.write_text(p.read_text().replace('<string>10.15</string>', '<string>12.0</string>').replace('<key>SUEnableAutomaticChecks</key>\n        <true/>', '<key>SUEnableAutomaticChecks</key>\n        <false/>'))
+          PY
+      - name: Configure and compile native app and tests
+        shell: bash
         env:
-          cache-name: cache-libcaesium
+          MACOSX_DEPLOYMENT_TARGET: '12.0'
+          CARGO_BUILD_TARGET: aarch64-apple-darwin
+        run: |
+          set -euo pipefail
+          # Rust host is ARM64; keep Cargo output at the path expected by upstream CMake.
+          unset CARGO_BUILD_TARGET
+          cmake -S . -B build-arm64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_PREFIX_PATH="$Qt6_Dir" -DSPARKLE_INCLUDE_DIR=/Library/Frameworks/Sparkle.framework/Headers -DLIBSSH_INCLUDE_DIR="$(xcrun --show-sdk-path)/usr/include"
+          cmake --build build-arm64 --config Release --parallel 3
+          QT_QPA_PLATFORM=offscreen ./build-arm64/tests/CsTests
+      - name: Bundle standalone application
+        shell: bash
+        run: |
+          set -euo pipefail
+          app='build-arm64/Caesium Image Compressor.app'
+          mkdir -p "$app/Contents/Frameworks"
+          cp build-arm64/libcaesium-prefix/src/libcaesium/target/release/libcaesium.dylib "$app/Contents/Frameworks/"
+          cp -R dependencies/Sparkle.framework "$app/Contents/Frameworks/"
+          exe="$app/Contents/MacOS/Caesium Image Compressor"
+          old=$(otool -L "$exe" | awk '/libcaesium/ {print $1}')
+          install_name_tool -change "$old" '@rpath/libcaesium.dylib' "$exe"
+          install_name_tool -id '@rpath/libcaesium.dylib' "$app/Contents/Frameworks/libcaesium.dylib"
+          "$Qt6_Dir/bin/macdeployqt" "$app" -always-overwrite
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          lipo -verify_arch arm64 "$exe"
+          lipo -verify_arch arm64 "$app/Contents/Frameworks/libcaesium.dylib"
+          otool -L "$exe"
+          # Remove original build libraries so launch proves bundled library resolution.
+          mv build-arm64/libcaesium-prefix/src/libcaesium/target/release build-arm64/rust-build-hidden
+          "$exe" > build-arm64/launch.log 2>&1 &
+          app_pid=$!
+          sleep 12
+          kill -0 "$app_pid" || { cat build-arm64/launch.log; exit 1; }
+          kill "$app_pid"
+          mkdir -p dist
+          cp LICENSE dist/LICENSE.txt
+          ditto -c -k --sequesterRsrc --keepParent "$app" dist/Caesium-Apple-Silicon.zip
+          mkdir -p dmg-root
+          ditto "$app" 'dmg-root/Caesium Image Compressor.app'
+          cp LICENSE dmg-root/LICENSE.txt
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname 'Caesium Apple Silicon' -srcfolder dmg-root -ov -format UDZO dist/Caesium-Apple-Silicon.dmg
+      - name: Upload finished Mac app
+        uses: actions/upload-artifact@v4
         with:
-          path: ${{github.workspace}}/build-${{ runner.os }}/libcaesium-prefix
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/libcaesium.conf') }}
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+          name: Caesium-Apple-Silicon-App
+          path: dist/*
+          if-no-files-found: error
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          aqtversion: '==3.1.*'
-          version: '6.8.2'
-          host: 'linux'
-          target: 'desktop'
-          arch: 'linux_gcc_64'
-          modules: 'qtimageformats'
-          cache: true
-
-      - name: Configure CMake
-        run: cmake -B build_dir -DCMAKE_PREFIX_PATH="${{env.Qt6_Dir}}" -DCMAKE_BUILD_TYPE=Release -B ${{github.workspace}}/build-${{ runner.os }}
-
-      - name: Build
-        run: cmake --build ${{github.workspace}}/build-${{ runner.os }} --config Release --target caesium_image_compressor
+          name: Mac-build-diagnostics
+          path: |
+            build-arm64/launch.log
+            build-arm64/libcaesium-prefix/src/libcaesium-stamp/*.log
+          if-no-files-found: ignore
