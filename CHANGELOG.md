@@ -2,6 +2,24 @@
 
 This fork adapts Caesium Image Compressor 2.8.5 for native Apple Silicon macOS. It is an independent port, not an upstream release.
 
+## 2026-10-25 — Preview responsiveness fix (2.8.5-mac.3)
+
+### Evidence and changes
+- A process sample from the previous diagnostic build showed the main thread blocked in `imageList_selectionChanged -> previewImage -> QFutureInterfaceBase::waitForFinished`. Compression workers were still in file reads/writes during that sample.
+- Remove the synchronous wait from preview replacement on the GUI thread.
+- Defer new previews while compression is active; the normal completion path refreshes the selected preview afterward.
+- Coalesce pending preview replacements to the latest request and retain a persistent model index so a removed row cannot be reused accidentally.
+- Preserve the previous completion diagnostics and compression algorithms.
+
+### Validation
+- ARM64 macOS build, existing importer tests, and packaged launch/signature checks passed.
+- Watchdog-backed tests verified that selection during compression and rapid preview replacement return promptly with unfinished preview futures.
+- The synthetic 80,026-entry completion tests still passed.
+- Build: https://github.com/artguilljr/caesium-apple-silicon/actions/runs/40218765606
+
+### Limits
+This addresses the GUI blocking wait observed in the process sample. It does not establish why file I/O was slow, reproduce the separate post-completion exit, or validate the user's actual image collection. Confirmation on the affected workload is still needed.
+
 ## 2026-10-25 — Completion diagnostic build (2.8.5-mac.2)
 
 ### Changes
@@ -36,4 +54,5 @@ The exact cause of the reported post-compression exit has not been reproduced or
 - No Metal/GPU compression has been implemented. No comparative performance gains have been established.
 - Installers are ad-hoc signed, not Developer ID signed or Apple-notarized.
 - Finished installers are Actions artifacts, not published GitHub Releases. Artifact retention limits apply.
+
 
